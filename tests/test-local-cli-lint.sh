@@ -174,6 +174,37 @@ expect_success \
   "lint ignores maintenance backup indexes under .librarian" \
   "$CLI" lint "$librarian_noise"
 
+if python3 - <<'PY'
+import os
+import sys
+sys.exit(0 if os.name == "nt" else 1)
+PY
+then
+  windows_links="$tmpdir/windows-links"
+  mkdir "$windows_links"
+  cp -R "$GOLDEN/." "$windows_links/"
+  target="$windows_links/wiki/concepts/sample-concept.md"
+  python3 - "$windows_links/wiki/references/sample-reference.md" "$target" <<'PY'
+import sys
+from pathlib import Path
+
+owner, target = sys.argv[1:]
+absolute = str(Path(target).resolve())
+slash_absolute = "/" + absolute.replace("\\", "/")
+drive_slash = absolute.replace("\\", "/")
+drive_backslash = absolute
+with open(owner, "a", encoding="utf-8") as handle:
+    handle.write("\n\n## Windows Absolute Links\n")
+    handle.write(f"- [slash drive]({slash_absolute})\n")
+    handle.write(f"- [drive slash]({drive_slash})\n")
+    handle.write(f"- [drive backslash]({drive_backslash})\n")
+PY
+
+  expect_success \
+    "lint resolves Windows absolute markdown links" \
+    "$CLI" lint "$windows_links"
+fi
+
 legacy_repair="$tmpdir/legacy-repair"
 mkdir "$legacy_repair"
 cp -R "$GOLDEN/." "$legacy_repair/"
@@ -353,6 +384,96 @@ JSON
 expect_success \
   "relative wikis.json paths resolve from hub" \
   "$CLI" lint --hub "$relative_hub" --wiki relative-topic
+
+absolute_registry_hub="$tmpdir/absolute-registry-hub"
+mkdir -p "$absolute_registry_hub/topics/absolute-topic"
+cp -R "$GOLDEN/." "$absolute_registry_hub/topics/absolute-topic/"
+absolute_registry_hub_path="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$absolute_registry_hub")"
+absolute_topic_path="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$absolute_registry_hub/topics/absolute-topic")"
+cat > "$absolute_registry_hub/_index.md" <<'EOF'
+# Hub Index
+EOF
+cat > "$absolute_registry_hub/log.md" <<'EOF'
+# Hub Log
+EOF
+python3 - "$absolute_registry_hub/wikis.json" "$absolute_registry_hub_path" "$absolute_topic_path" <<'PY'
+import json
+import sys
+
+registry, hub_path, topic_path = sys.argv[1:]
+data = {
+    "default": hub_path,
+    "wikis": {
+        "hub": {"path": hub_path, "description": "Hub"},
+        "absolute-topic": {"path": topic_path, "description": "Absolute topic"},
+    },
+    "local_wikis": [],
+}
+with open(registry, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, indent=2)
+    handle.write("\n")
+PY
+
+expect_failure_contains \
+  "hub lint warns on absolute hub-owned registry paths" \
+  "Hub-owned wiki path should be portable" \
+  "$CLI" lint "$absolute_registry_hub"
+
+set +e
+absolute_fix_output="$("$CLI" lint --fix "$absolute_registry_hub" 2>&1)"
+absolute_fix_rc=$?
+set -e
+if [ "$absolute_fix_rc" -eq 0 ] \
+  && grep -q "Result: PASS" <<<"$absolute_fix_output" \
+  && grep -q '"default": "<HUB>"' "$absolute_registry_hub/wikis.json" \
+  && grep -q '"path": "topics/absolute-topic"' "$absolute_registry_hub/wikis.json" \
+  && grep -q '"path": "<HUB>"' "$absolute_registry_hub/wikis.json"; then
+  log_pass "--fix rewrites hub-owned registry paths to portable values"
+else
+  log_fail "--fix rewrites hub-owned registry paths to portable values" "$absolute_fix_output"
+fi
+
+stale_registry_hub="$tmpdir/stale-registry-hub"
+stale_sibling_hub="$tmpdir/stale-sibling-hub"
+mkdir -p "$stale_registry_hub/topics/stale-topic" "$stale_sibling_hub/topics/stale-topic"
+cp -R "$GOLDEN/." "$stale_registry_hub/topics/stale-topic/"
+cp -R "$GOLDEN/." "$stale_sibling_hub/topics/stale-topic/"
+stale_sibling_topic_path="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$stale_sibling_hub/topics/stale-topic")"
+cat > "$stale_registry_hub/_index.md" <<'EOF'
+# Hub Index
+EOF
+cat > "$stale_registry_hub/log.md" <<'EOF'
+# Hub Log
+EOF
+python3 - "$stale_registry_hub/wikis.json" "$stale_sibling_topic_path" <<'PY'
+import json
+import sys
+
+registry, stale_topic_path = sys.argv[1:]
+data = {
+    "default": "<HUB>",
+    "wikis": {
+        "hub": {"path": "<HUB>", "description": "Hub"},
+        "stale-topic": {"path": stale_topic_path, "description": "Stale sibling path"},
+    },
+    "local_wikis": [],
+}
+with open(registry, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, indent=2)
+    handle.write("\n")
+PY
+
+set +e
+stale_fix_output="$("$CLI" lint --fix "$stale_registry_hub" 2>&1)"
+stale_fix_rc=$?
+set -e
+if [ "$stale_fix_rc" -eq 0 ] \
+  && grep -q "Result: PASS" <<<"$stale_fix_output" \
+  && grep -q '"path": "topics/stale-topic"' "$stale_registry_hub/wikis.json"; then
+  log_pass "--fix rewrites stale sibling checkout registry paths to current hub topics"
+else
+  log_fail "--fix rewrites stale sibling checkout registry paths to current hub topics" "$stale_fix_output"
+fi
 
 archive_hub="$tmpdir/archive-hub"
 mkdir -p "$archive_hub/topics/archive-topic"
