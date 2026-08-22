@@ -284,6 +284,11 @@ expect_failure_contains \
   "Invalid type" \
   "$CLI" lint "$SCRIPT_DIR/fixtures/defects/bad-frontmatter"
 
+expect_failure_contains \
+  "raw-source-unresolved fixture fails local lint" \
+  "Raw source reference does not resolve" \
+  "$CLI" lint "$SCRIPT_DIR/fixtures/defects/raw-source-unresolved"
+
 ideas_wiki="$tmpdir/ideas-wiki"
 mkdir "$ideas_wiki"
 cp -R "$GOLDEN/." "$ideas_wiki/"
