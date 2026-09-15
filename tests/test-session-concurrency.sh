@@ -106,6 +106,16 @@ def stress(impl, seconds=1.5, nproc=8):
         def payload(i):
             return json.dumps({"w": i, "pad": "x" * (2000 if i % 2 == 0 else 200000)}) + "\n"
 
+        def read_with_retry(target):
+            # Windows cannot open a file mid-replace; a real reader retries, so the
+            # measurement here must too, or it counts the platform, not a lost write.
+            for _ in range(200):
+                try:
+                    return json.loads(target.read_text(encoding="utf-8"))
+                except PermissionError:
+                    time.sleep(0.005)
+            return json.loads(target.read_text(encoding="utf-8"))
+        
         aw = old_atomic_write if impl == "old" else sut.atomic_write
         p = Path(path_s)
         text = payload(int(idx_s))
@@ -118,7 +128,7 @@ def stress(impl, seconds=1.5, nproc=8):
                 repl += 1
                 continue
             try:
-                json.loads(p.read_text(encoding="utf-8"))
+                read_with_retry(p)
             except json.JSONDecodeError:
                 torn += 1
             except FileNotFoundError:
@@ -175,6 +185,28 @@ def main():
             okdef = False
     print("HEAL_FALLBACK", "PASS" if okdef else "FAIL")
 
+    class DeniedPath:
+        def exists(self):
+            return True
+
+        def read_text(self, **_kwargs):
+            raise PermissionError("persistent sharing violation")
+
+    original_monotonic = sut.time.monotonic
+    original_sleep = sut.time.sleep
+    ticks = iter((0.0, 2.0))
+    permission_raised = False
+    try:
+        sut.time.monotonic = lambda: next(ticks)
+        sut.time.sleep = lambda _seconds: None
+        sut.read_json(DeniedPath(), {"D": True})
+    except PermissionError:
+        permission_raised = True
+    finally:
+        sut.time.monotonic = original_monotonic
+        sut.time.sleep = original_sleep
+    print("PERMISSION_FAIL_CLOSED", "PASS" if permission_raised else "FAIL")
+
     # Layer 3 — race contrast
     old = stress("old")
     new = stress("new")
@@ -198,6 +230,10 @@ else
   grep -q "^HEAL_FALLBACK PASS" <<<"$py_out" \
     && log_pass "read_json falls back to default on leading-garbage / fragment / empty" \
     || log_fail "read_json fallback on unhealable data" "$(grep '^HEAL_FALLBACK' <<<"$py_out")"
+
+  grep -q "^PERMISSION_FAIL_CLOSED PASS" <<<"$py_out" \
+    && log_pass "read_json raises after a persistent permission failure" \
+    || log_fail "read_json persistent permission failure" "$(grep '^PERMISSION_FAIL_CLOSED' <<<"$py_out")"
 
   new_bad="$(awk '/^NEW_RACE/{print $2}' <<<"$py_out")"
   old_bad="$(awk '/^OLD_RACE/{print $2}' <<<"$py_out")"
