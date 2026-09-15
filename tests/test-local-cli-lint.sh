@@ -123,8 +123,9 @@ trap 'rm -rf "$tmpdir"' EXIT
 warning_only="$tmpdir/warning-only"
 mkdir "$warning_only"
 cp -R "$GOLDEN/." "$warning_only/"
-sed -i 's/^confidence: high$/confidence: unsupported/' \
+sed -i.bak 's/^confidence: high$/confidence: unsupported/' \
   "$warning_only/wiki/concepts/sample-concept.md"
+rm -f "$warning_only/wiki/concepts/sample-concept.md.bak"
 
 expect_failure_contains \
   "default lint exit still fails on a warning" \
