@@ -1604,7 +1604,12 @@ def raw_source_path_candidate(ctx: LintContext, owner: Path, ref: str) -> Path |
         if parsed.scheme.lower() != "file":
             return None
         path_text = urllib.parse.unquote(parsed.path)
-        if parsed.netloc and parsed.netloc.lower() != "localhost":
+        if os.name == "nt" and re.match(r"^[A-Za-z]:$", parsed.netloc or ""):
+            # The non-canonical two-slash form file://C:/path puts the drive
+            # letter in netloc. Restore it as a drive path before applying the
+            # normal UNC-host handling below.
+            path_text = f"{parsed.netloc}{path_text}"
+        elif parsed.netloc and parsed.netloc.lower() != "localhost":
             path_text = f"//{parsed.netloc}{path_text}"
         if os.name == "nt" and re.match(r"^/[A-Za-z]:/", path_text):
             path_text = path_text[1:]
@@ -1628,7 +1633,15 @@ def raw_source_path_candidate(ctx: LintContext, owner: Path, ref: str) -> Path |
         return ref_path
     if explicit_relative:
         return owner.parent / ref_path
-    return ctx.root / ref_path
+    candidate = ctx.root / ref_path
+    if ctx.root.name == ".wiki" and not source_path_exists(candidate):
+        # Project-local wikis commonly cite repository files from the project
+        # root (for example docs/strategy.md), not from inside .wiki/. Prefer a
+        # real wiki-local target, then accept the parent-project spelling.
+        project_candidate = ctx.root.parent / ref_path
+        if source_path_exists(project_candidate):
+            return project_candidate
+    return candidate
 
 
 def source_path_exists(path: Path) -> bool:

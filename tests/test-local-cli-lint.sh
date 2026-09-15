@@ -312,6 +312,18 @@ expect_success \
   "raw provenance sentinels, URIs, valid paths, directories, and upstream links stay compatible" \
   "$CLI" lint "$raw_source_compat"
 
+project_local_root="$tmpdir/project-local"
+project_local_wiki="$project_local_root/.wiki"
+mkdir -p "$project_local_wiki" "$project_local_root/docs/strategy"
+cp -R "$GOLDEN/." "$project_local_wiki/"
+printf '# Account intelligence\n' > "$project_local_root/docs/strategy/account-intelligence.md"
+sed -i.bak 's|^source: https://example.com/testing-patterns$|source: docs/strategy/account-intelligence.md|' \
+  "$project_local_wiki/raw/articles/2026-01-01-sample-article.md"
+rm -f "$project_local_wiki/raw/articles/2026-01-01-sample-article.md.bak"
+expect_success \
+  "project-local wiki resolves bare source paths from the parent project" \
+  "$CLI" lint "$project_local_wiki"
+
 ideas_wiki="$tmpdir/ideas-wiki"
 mkdir "$ideas_wiki"
 cp -R "$GOLDEN/." "$ideas_wiki/"

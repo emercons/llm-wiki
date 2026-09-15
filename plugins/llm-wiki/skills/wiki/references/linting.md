@@ -119,7 +119,8 @@ There is no `/wiki:migrate` command and there should never be one. Lint rules **
   `./`/`../`/`~/` paths, and whitespace-free relative paths containing a
   directory separator as local. Other URI schemes, schemeless web URLs,
   sentinels such as `MANUAL` or `session`, and free-form provenance labels are
-  not local-path checks.
+  not local-path checks. For a project-local `.wiki/`, resolve a bare relative
+  path inside `.wiki/` first and then from the parent project root.
 - [ ] No `<!--RETRACTED-SOURCE-->` markers remain in article body (these should be resolved via `--recompile` or manual review)
 - [ ] No raw source file is referenced by zero wiki articles (orphan source — suggest compilation or removal)
 - [ ] Exempt raw files tagged `collection-manifest` from orphan-source warnings. A collection manifest is operational provenance for a batch import; child sources should be compiled, but the manifest itself does not need to appear in article `sources:`.
