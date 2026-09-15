@@ -74,6 +74,22 @@ EXPECTED_VERSION="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[
 TMP_OUTPUT="$(mktemp)"
 TMP_LIST="$(mktemp)"
 USER_CONFIG="$USER_HOME/.codex/config.toml"
+
+# Codex resolves its own home from CODEX_HOME, falling back to the OS home - and
+# on Windows that fallback is USERPROFILE, not HOME. Setting HOME alone therefore
+# leaves every invocation below writing into the real user profile, so
+# --user-home does not isolate anything and the runtime test installs a
+# marketplace and a plugin into the developer's own Codex config. Export
+# CODEX_HOME too, in the form the native binary can read.
+codex_home_for() {
+  local home="$1/.codex"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$home"
+  else
+    printf '%s' "$home"
+  fi
+}
+
 TARGET_CONFIG="$USER_CONFIG"
 cleanup() {
   rm -f "$TMP_OUTPUT" "$TMP_LIST"
@@ -101,8 +117,8 @@ if ! grep -Fq "[plugins.\"$PLUGIN_KEY\"]" "$TARGET_CONFIG"; then
   exit 1
 fi
 
-HOME="$USER_HOME" codex -C "$PROJECT_ROOT" plugin list --marketplace "$MARKETPLACE_NAME" --json >"$TMP_LIST"
-HOME="$USER_HOME" codex -C "$PROJECT_ROOT" debug prompt-input '@wiki test' >"$TMP_OUTPUT"
+HOME="$USER_HOME" CODEX_HOME="$(codex_home_for "$USER_HOME")" codex -C "$PROJECT_ROOT" plugin list --marketplace "$MARKETPLACE_NAME" --json >"$TMP_LIST"
+HOME="$USER_HOME" CODEX_HOME="$(codex_home_for "$USER_HOME")" codex -C "$PROJECT_ROOT" debug prompt-input '@wiki test' >"$TMP_OUTPUT"
 
 INSTALLED_VERSION="$(python3 - "$TMP_LIST" "$PLUGIN_KEY" "$EXPECTED_VERSION" "$SOURCE_PLUGIN_ROOT" "$ROOT" <<'PY'
 import json
@@ -123,10 +139,36 @@ if not plugin.get("enabled"):
 if plugin.get("version") != expected_version:
     errors.append(f"installed version {plugin.get('version')!r} != expected {expected_version!r}")
 
+def strip_extended_prefix(text):
+    """Codex records Windows paths in extended-length form (\\\\?\\C:\\...).
+
+    Comparing that spelling verbatim against the path we asked for reports a
+    correct install as a mismatch, so compare identities instead.
+    """
+    unc_prefix = "\\\\?\\UNC\\"
+    if text.startswith(unc_prefix):
+        # Extended UNC paths drop the literal UNC component but retain the
+        # leading network-share separators: \\?\UNC\host\share -> \\host\share.
+        return "\\\\" + text[len(unc_prefix):]
+    drive_prefix = "\\\\?\\"
+    if text.startswith(drive_prefix):
+        return text[len(drive_prefix):]
+    return text
+
+
+for original, expected in (
+    (r"\\?\C:\repo", r"C:\repo"),
+    (r"\\?\UNC\server\share\repo", r"\\server\share\repo"),
+):
+    if strip_extended_prefix(original) != expected:
+        raise SystemExit(f"FAIL: could not normalize extended Windows path {original!r}")
+
+
 def same_path(actual, expected):
     if not actual:
         return False
-    return Path(actual).expanduser().resolve() == Path(expected).expanduser().resolve()
+    actual = Path(strip_extended_prefix(str(actual))).expanduser().resolve()
+    return actual == Path(str(expected)).expanduser().resolve()
 
 source = plugin.get("source") or {}
 if source.get("source") != "local" or not same_path(source.get("path"), source_root):
@@ -172,15 +214,23 @@ def strings(value):
         for item in value.values():
             yield from strings(item)
 
+skill_roots = {}
+actual_skill_path = ""
 for text in strings(data):
     for line in text.splitlines():
-        if "- wiki:wiki:" not in line:
-            continue
-        match = re.search(r"\(file: ([^)]+/skills/wiki/SKILL\.md)\)", line)
-        if match:
-            print(match.group(1))
-            raise SystemExit(0)
-print("")
+        root_match = re.match(r"^- `(r\d+)` = `(.+)`$", line.strip())
+        if root_match:
+            skill_roots[root_match.group(1)] = root_match.group(2)
+        if "- wiki:wiki:" in line:
+            match = re.search(r"\(file: ([^)]+/skills/wiki/SKILL\.md)\)", line)
+            if match:
+                actual_skill_path = match.group(1)
+
+if actual_skill_path:
+    logical_root, separator, remainder = actual_skill_path.partition("/")
+    if separator and logical_root in skill_roots:
+        actual_skill_path = str(Path(skill_roots[logical_root]) / remainder)
+print(actual_skill_path)
 PY
 )"
 
