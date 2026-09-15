@@ -188,7 +188,8 @@ for old, new in replacements:
         raise SystemExit(f"Expected text not found in {skill_path}: {old[:80]!r}")
     text = text.replace(old, new)
 
-skill_path.write_text(text, encoding="utf-8", newline="\n")
+with skill_path.open("w", encoding="utf-8", newline="\n") as handle:
+    handle.write(text)
 
 # references/ is a symlink to claude-plugin/skills/wiki-manager/references and
 # is shared verbatim — no per-file replacements needed. Source references use

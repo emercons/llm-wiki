@@ -173,7 +173,8 @@ for entries in value["hooks"].values():
     for entry in entries:
         for hook in entry["hooks"]:
             hook["command"] = launcher
-path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8", newline="\n")
+with path.open("w", encoding="utf-8", newline="\n") as handle:
+    handle.write(json.dumps(value, indent=2) + "\n")
 PY
 
 cat > "$TARGET_SKILL/agents/openai.yaml" <<'EOF'
@@ -393,7 +394,8 @@ text = replace_section(
 """,
 )
 
-skill_path.write_text(text, encoding="utf-8", newline="\n")
+with skill_path.open("w", encoding="utf-8", newline="\n") as handle:
+    handle.write(text)
 
 # references/ is a copied mirror of claude-plugin/skills/wiki-manager/references
 # and is shared verbatim — no per-file replacements needed. Source references
@@ -445,7 +447,8 @@ idea_prompt = "Capture this rough Idea, research it, shape alternatives, and wai
 if idea_prompt not in prompts:
     prompts.insert(0, idea_prompt)
 interface["defaultPrompt"] = prompts
-codex_manifest.write_text(json.dumps(codex, indent=2) + "\n", encoding="utf-8", newline="\n")
+with codex_manifest.open("w", encoding="utf-8", newline="\n") as handle:
+    handle.write(json.dumps(codex, indent=2) + "\n")
 PY
 
 echo "Synced Codex plugin skill from Claude source."
