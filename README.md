@@ -19,6 +19,12 @@ LLM-compiled knowledge bases for any AI agent. Capture rough Ideas, research and
 
 ## Changelog
 
+**v0.25.0** — **Portable multi-runtime reliability.** Adds configurable
+`llm-wiki lint --fail-on critical|warning|suggestion` exit gates, portable
+Claude/Codex/OpenCode packaging without `rsync`, safer Windows session-state
+and path handling, `HOME`-aware hub discovery, and isolated Codex installs that
+respect the selected `CODEX_HOME`.
+
 **v0.24.0** — **Project Knowledge Checkpoints Export.** Exports comprehensive,
 cross-topic project handoffs under `docs/knowledge/<slug>/` with
 dry-run-first create and refresh, read-only verification and bounded import,
@@ -48,14 +54,6 @@ lives only in the corresponding private adapter.
 remote-resource allowlists, declared read/write effects, explicit approval
 bound to an exact plan hash, expected revisions, stable idempotency keys,
 private verified receipts, and content-free terminal reporting.
-
-**v0.19.0** — **Private adapter protocol.** Adds an explicitly trusted,
-machine-local adapter registry and portable `llm-wiki-adapter/v1` JSON contract,
-with manifest handshakes, path scopes, sanitized environments, hash-verified
-artifacts, bundled management CLI, and an explicit workflow boundary that never
-passes a wiki destination or auto-promotes adapter output.
-
-**v0.18.0** — **Hub-wide portfolio.** Adds `/wiki:portfolio`, a live read-only view across active topic wikis that lists canonical Ideas and active Projects separately, distinguishes explicitly promoted Projects from direct ones, preserves Concepts as supporting knowledge, and avoids catch-all topics, duplicated records, inferred lineage, and stale portfolio caches.
 
 ## Install
 
