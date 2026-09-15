@@ -145,10 +145,23 @@ def strip_extended_prefix(text):
     Comparing that spelling verbatim against the path we asked for reports a
     correct install as a mismatch, so compare identities instead.
     """
-    for prefix in ("\\\\?\\UNC\\", "\\\\?\\"):
-        if text.startswith(prefix):
-            return text[len(prefix):]
+    unc_prefix = "\\\\?\\UNC\\"
+    if text.startswith(unc_prefix):
+        # Extended UNC paths drop the literal UNC component but retain the
+        # leading network-share separators: \\?\UNC\host\share -> \\host\share.
+        return "\\\\" + text[len(unc_prefix):]
+    drive_prefix = "\\\\?\\"
+    if text.startswith(drive_prefix):
+        return text[len(drive_prefix):]
     return text
+
+
+for original, expected in (
+    (r"\\?\C:\repo", r"C:\repo"),
+    (r"\\?\UNC\server\share\repo", r"\\server\share\repo"),
+):
+    if strip_extended_prefix(original) != expected:
+        raise SystemExit(f"FAIL: could not normalize extended Windows path {original!r}")
 
 
 def same_path(actual, expected):
@@ -201,15 +214,23 @@ def strings(value):
         for item in value.values():
             yield from strings(item)
 
+skill_roots = {}
+actual_skill_path = ""
 for text in strings(data):
     for line in text.splitlines():
-        if "- wiki:wiki:" not in line:
-            continue
-        match = re.search(r"\(file: ([^)]+/skills/wiki/SKILL\.md)\)", line)
-        if match:
-            print(match.group(1))
-            raise SystemExit(0)
-print("")
+        root_match = re.match(r"^- `(r\d+)` = `(.+)`$", line.strip())
+        if root_match:
+            skill_roots[root_match.group(1)] = root_match.group(2)
+        if "- wiki:wiki:" in line:
+            match = re.search(r"\(file: ([^)]+/skills/wiki/SKILL\.md)\)", line)
+            if match:
+                actual_skill_path = match.group(1)
+
+if actual_skill_path:
+    logical_root, separator, remainder = actual_skill_path.partition("/")
+    if separator and logical_root in skill_roots:
+        actual_skill_path = str(Path(skill_roots[logical_root]) / remainder)
+print(actual_skill_path)
 PY
 )"
 
