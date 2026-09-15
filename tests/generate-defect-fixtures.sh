@@ -17,7 +17,10 @@ find "$DEFECTS" -depth -type d -name '* 2' -exec rm -rf {} +
 copy_golden() {
   local name="$1"
   mkdir -p "$DEFECTS/$name"
-  rsync -a --delete --delete-excluded --exclude 'inbox/' "$GOLDEN/" "$DEFECTS/$name/"
+  rm -rf "$DEFECTS/$name"
+  mkdir -p "$DEFECTS/$name"
+  cp -R "$GOLDEN/." "$DEFECTS/$name/"
+  rm -rf "$DEFECTS/$name/inbox"
 }
 
 echo "Generating defect fixtures from golden wiki..."
@@ -74,6 +77,13 @@ sed -i.bak '/^  - wiki\/references/a\
 rm -f "$DEFECTS/dangling-source-ref/wiki/concepts/sample-concept.md.bak" \
   "$DEFECTS/dangling-source-ref/inventory/items/trx4m-ring-and-pinion.md.bak"
 echo "  Created: dangling-source-ref (C4b)"
+
+# C4b: raw-source-unresolved — explicit local source: path does not resolve
+copy_golden "raw-source-unresolved"
+sed -i.bak 's|^source: https://example.com/eval-methodology$|source: ../../../research/nonexistent-original.pdf|' \
+  "$DEFECTS/raw-source-unresolved/raw/papers/2026-01-01-sample-paper.md"
+rm -f "$DEFECTS/raw-source-unresolved/raw/papers/2026-01-01-sample-paper.md.bak"
+echo "  Created: raw-source-unresolved (C4b)"
 
 # C4b: retracted-marker — <!--RETRACTED-SOURCE--> left in body
 copy_golden "retracted-marker"
