@@ -60,6 +60,9 @@ CONFIDENCE_VALUES = {"high", "medium", "low"}
 VOLATILITY_VALUES = {"hot", "warm", "cold"}
 PERMISSION_DENIED_ERRNOS = {1, 13}
 WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^/?[A-Za-z]:[\\/]")
+SCHEMELESS_WEB_SOURCE_RE = re.compile(
+    r"^(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d+)?(?:[/#?]|$)"
+)
 ADAPTER_PROTOCOL = "llm-wiki-adapter/v1"
 ADAPTER_REGISTRY_SCHEMA = 1
 ADAPTER_MANIFEST_NAME = ".llm-wiki-adapter.json"
@@ -1473,6 +1476,16 @@ def check_source_provenance(ctx: LintContext) -> None:
                             f"Inventory source reference does not resolve: {source}.",
                             doc.path,
                         )
+        elif rel.parts[0] == "raw":
+            source = doc.frontmatter.get("source")
+            if source:
+                candidate = raw_source_path_candidate(ctx, doc.path, str(source))
+                if candidate is not None and not source_path_exists(candidate):
+                    ctx.issue(
+                        "warning",
+                        f"Raw source reference does not resolve: {source}.",
+                        doc.path,
+                    )
 
         if "RETRACTED-SOURCE" in doc.body:
             ctx.issue("warning", "Retracted-source marker remains in the file body.", doc.path)
@@ -1560,6 +1573,83 @@ def resolve_source_ref(ctx: LintContext, owner: Path, ref: str, wiki_source: boo
             ctx.issue("warning", f"Source reference is ambiguous after fuzzy slug fallback: {ref}.", owner)
             return None
     return None
+
+
+def raw_source_path_candidate(ctx: LintContext, owner: Path, ref: str) -> Path | None:
+    """Return a candidate only when a raw source value is clearly a local path.
+
+    Raw provenance also uses sentinels such as ``session`` and descriptive
+    labels. Treating every non-HTTP value as a path would make those established
+    values fail lint. URI schemes remain external except for ``file://``; bare
+    relative paths must contain a separator and no whitespace to be considered
+    unambiguous.
+    """
+    ref = strip_matching_quotes(ref.strip())
+    if not ref:
+        return None
+
+    windows_ref = windows_absolute_path(ref)
+    if windows_ref is not None:
+        return windows_ref
+
+    try:
+        parsed = urllib.parse.urlsplit(ref)
+    except ValueError:
+        parsed = None
+    if parsed is not None and parsed.scheme:
+        # Do not mistake a Windows drive letter for a URI scheme on a platform
+        # where Windows paths are not native.
+        if WINDOWS_ABSOLUTE_PATH_RE.match(ref):
+            return Path(ref)
+        if parsed.scheme.lower() != "file":
+            return None
+        path_text = urllib.parse.unquote(parsed.path)
+        if os.name == "nt" and re.match(r"^[A-Za-z]:$", parsed.netloc or ""):
+            # The non-canonical two-slash form file://C:/path puts the drive
+            # letter in netloc. Restore it as a drive path before applying the
+            # normal UNC-host handling below.
+            path_text = f"{parsed.netloc}{path_text}"
+        elif parsed.netloc and parsed.netloc.lower() != "localhost":
+            path_text = f"//{parsed.netloc}{path_text}"
+        if os.name == "nt" and re.match(r"^/[A-Za-z]:/", path_text):
+            path_text = path_text[1:]
+        file_path = Path(path_text)
+        return file_path if file_path.is_absolute() else ctx.root / file_path
+
+    if SCHEMELESS_WEB_SOURCE_RE.match(ref):
+        return None
+
+    explicit_relative = ref.startswith(("../", "./", "..\\", ".\\"))
+    home_relative = ref == "~" or ref.startswith(("~/", "~\\"))
+    absolute = Path(ref).is_absolute()
+    unambiguous_bare_relative = (
+        not any(char.isspace() for char in ref) and ("/" in ref or "\\" in ref)
+    )
+    if not (explicit_relative or home_relative or absolute or unambiguous_bare_relative):
+        return None
+
+    ref_path = expand_leading_tilde(ref)
+    if ref_path.is_absolute():
+        return ref_path
+    if explicit_relative:
+        return owner.parent / ref_path
+    candidate = ctx.root / ref_path
+    if ctx.root.name == ".wiki" and not source_path_exists(candidate):
+        # Project-local wikis commonly cite repository files from the project
+        # root (for example docs/strategy.md), not from inside .wiki/. Prefer a
+        # real wiki-local target, then accept the parent-project spelling.
+        project_candidate = ctx.root.parent / ref_path
+        if source_path_exists(project_candidate):
+            return project_candidate
+    return candidate
+
+
+def source_path_exists(path: Path) -> bool:
+    """Check a source file or directory without crashing on sandbox denials."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
 
 
 def strip_matching_quotes(value: str) -> str:
@@ -1771,14 +1861,26 @@ def append_lint_log(ctx: LintContext) -> None:
         handle.write(entry)
 
 
+def home_directory() -> Path:
+    """Return the home directory, honouring HOME on every platform.
+
+    ``Path.home()`` consults USERPROFILE on Windows and ignores HOME entirely, so
+    a hub configured as ``~/...`` resolved against a different profile than the
+    one the caller asked for, and every wiki in it was reported missing from the
+    registry. Git honours HOME on Windows; match that.
+    """
+    home = os.environ.get("HOME")
+    return Path(home) if home else Path.home()
+
+
 def expand_leading_tilde(value: str) -> Path:
     windows_path = windows_absolute_path(value)
     if windows_path is not None:
         return windows_path
     if value == "~":
-        return Path.home()
+        return home_directory()
     if value.startswith("~/"):
-        return Path.home() / value[2:]
+        return home_directory() / value[2:]
     return Path(value)
 
 
@@ -1812,7 +1914,7 @@ def initialized_wiki_root(path: Path) -> bool:
 def resolve_hub(args: argparse.Namespace) -> Path:
     if args.hub:
         return expand_leading_tilde(str(args.hub))
-    config = Path.home() / ".config" / "llm-wiki" / "config.json"
+    config = home_directory() / ".config" / "llm-wiki" / "config.json"
     if config.exists():
         try:
             data = json.loads(config.read_text(encoding="utf-8"))
@@ -1840,7 +1942,7 @@ def resolve_hub(args: argparse.Namespace) -> Path:
                 return hub_candidate
         if resolved_candidate:
             return resolved_candidate
-    fallback = Path.home() / "wiki"
+    fallback = home_directory() / "wiki"
     return fallback
 
 
@@ -2091,7 +2193,7 @@ def run_lint(args: argparse.Namespace) -> int:
         else:
             print_text_report(ctx)
         counts = ctx.counts()
-        return 1 if counts["critical"] or counts["warning"] or counts["suggestion"] else 0
+        return lint_exit_code(counts, getattr(args, "fail_on", "suggestion"))
 
     load_documents(ctx)
     fix_legacy_wiki_frontmatter(ctx)
@@ -2114,7 +2216,24 @@ def run_lint(args: argparse.Namespace) -> int:
         print_text_report(ctx)
 
     counts = ctx.counts()
-    return 1 if counts["critical"] or counts["warning"] or counts["suggestion"] else 0
+    return lint_exit_code(counts, getattr(args, "fail_on", "suggestion"))
+
+
+FAIL_ON_LEVELS = ("critical", "warning", "suggestion")
+
+
+def lint_exit_code(counts: dict[str, int], fail_on: str = "suggestion") -> int:
+    """Exit non-zero when a finding at or above ``fail_on`` severity exists.
+
+    The default reproduces the historical behaviour, in which any finding
+    fails. A stricter gate such as ``--fail-on critical`` lets CI block
+    protocol violations without being blocked by advisory findings.
+    """
+    if fail_on in FAIL_ON_LEVELS:
+        threshold = FAIL_ON_LEVELS.index(fail_on)
+    else:
+        threshold = len(FAIL_ON_LEVELS) - 1
+    return 1 if any(counts.get(level) for level in FAIL_ON_LEVELS[: threshold + 1]) else 0
 
 
 def print_json_report(ctx: LintContext) -> None:
@@ -3748,7 +3867,7 @@ def adapter_config_dir() -> Path:
     override = os.environ.get("LLM_WIKI_CONFIG_DIR")
     if override:
         return expand_leading_tilde(override)
-    return Path.home() / ".config" / "llm-wiki"
+    return home_directory() / ".config" / "llm-wiki"
 
 
 def adapter_registry_path() -> Path:
@@ -5556,6 +5675,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow linting an explicitly targeted archived wiki.",
     )
     lint.add_argument("--json", action="store_true", help="Print a machine-readable JSON report.")
+    lint.add_argument(
+        "--fail-on",
+        choices=FAIL_ON_LEVELS,
+        default="suggestion",
+        help=(
+            "Lowest severity that makes the command exit non-zero "
+            "(default: suggestion, i.e. any finding)."
+        ),
+    )
     lint.set_defaults(func=run_lint)
 
     archive = subparsers.add_parser(

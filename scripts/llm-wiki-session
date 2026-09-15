@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 import textwrap
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -149,11 +150,22 @@ def today() -> str:
     return dt.date.today().isoformat()
 
 
+def home_directory() -> Path:
+    """Return the home directory, honouring HOME on every platform.
+
+    Path.home() consults USERPROFILE on Windows and ignores HOME, so a hub
+    configured as ~/... resolved against a different profile than the caller
+    asked for. Git honours HOME on Windows; match that.
+    """
+    home = os.environ.get("HOME")
+    return Path(home) if home else Path.home()
+
+
 def expand_leading_tilde(value: str) -> Path:
     if value == "~":
-        return Path.home()
+        return home_directory()
     if value.startswith("~/"):
-        return Path.home() / value[2:]
+        return home_directory() / value[2:]
     return Path(value)
 
 
@@ -162,7 +174,7 @@ def resolve_hub(args: argparse.Namespace) -> Path:
         return Path.cwd() / ".wiki"
     if getattr(args, "hub", None):
         return expand_leading_tilde(str(args.hub))
-    config = Path.home() / ".config" / "llm-wiki" / "config.json"
+    config = home_directory() / ".config" / "llm-wiki" / "config.json"
     if config.exists():
         try:
             data = json.loads(config.read_text(encoding="utf-8"))
@@ -171,7 +183,7 @@ def resolve_hub(args: argparse.Namespace) -> Path:
         hub_path = data.get("hub_path") or data.get("resolved_path")
         if hub_path:
             return expand_leading_tilde(str(hub_path))
-    return Path.home() / "wiki"
+    return home_directory() / "wiki"
 
 
 def sessions_dir(hub: Path) -> Path:
@@ -219,7 +231,19 @@ def atomic_write(path: Path, text: str) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, path)
+        # POSIX rename always succeeds; Windows refuses to replace a file that
+        # another process currently has open, which concurrent hooks reading the
+        # same state file do constantly. The window is short, so retry briefly
+        # rather than losing the write - and still raise if it never clears.
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
     finally:
         if tmp.exists():
             try:
@@ -231,7 +255,23 @@ def atomic_write(path: Path, text: str) -> None:
 def read_json(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
-    text = path.read_text(encoding="utf-8")
+    # Windows also refuses to open a file while it is being replaced, so a reader
+    # that meets a writer sees a sharing violation rather than either version of
+    # the file. The window is very short; retry briefly before giving up.
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            text = path.read_text(encoding="utf-8")
+            break
+        except FileNotFoundError:
+            return default
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                # A persistent sharing or permission failure is not equivalent
+                # to an absent/corrupt state file. Fail closed so callers do
+                # not rebuild and overwrite durable state from an empty default.
+                raise
+            time.sleep(0.005)
     try:
         return json.loads(text)
     except json.JSONDecodeError:

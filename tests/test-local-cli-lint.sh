@@ -120,6 +120,30 @@ expect_success "golden wiki passes local lint" "$CLI" lint "$GOLDEN"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
+warning_only="$tmpdir/warning-only"
+mkdir "$warning_only"
+cp -R "$GOLDEN/." "$warning_only/"
+sed -i.bak 's/^confidence: high$/confidence: unsupported/' \
+  "$warning_only/wiki/concepts/sample-concept.md"
+rm -f "$warning_only/wiki/concepts/sample-concept.md.bak"
+
+expect_failure_contains \
+  "default lint exit still fails on a warning" \
+  "Invalid confidence" \
+  "$CLI" lint "$warning_only"
+
+set +e
+fail_on_output="$("$CLI" lint "$warning_only" --fail-on critical 2>&1)"
+fail_on_rc=$?
+set -e
+if [ "$fail_on_rc" -eq 0 ] \
+  && grep -q "Invalid confidence" <<<"$fail_on_output" \
+  && grep -q "Result: FAIL" <<<"$fail_on_output"; then
+  log_pass "--fail-on critical ignores advisory findings in exit status"
+else
+  log_fail "--fail-on critical ignores advisory findings in exit status" "$fail_on_output"
+fi
+
 hybrid_rollup="$tmpdir/hybrid-rollup"
 mkdir "$hybrid_rollup"
 cp -R "$SCRIPT_DIR/fixtures/defects/stale-inventory-rollup/." "$hybrid_rollup/"
@@ -283,6 +307,46 @@ expect_failure_contains \
   "bad-frontmatter fixture fails local lint" \
   "Invalid type" \
   "$CLI" lint "$SCRIPT_DIR/fixtures/defects/bad-frontmatter"
+
+expect_failure_contains \
+  "explicit unresolved raw source path fails local lint" \
+  "Raw source reference does not resolve" \
+  "$CLI" lint "$SCRIPT_DIR/fixtures/defects/raw-source-unresolved"
+
+raw_source_compat="$tmpdir/raw-source-compat"
+mkdir "$raw_source_compat"
+cp -R "$GOLDEN/." "$raw_source_compat/"
+mkdir "$tmpdir/local-source-repository"
+mkdir "$tmpdir/local source files"
+printf '# Original source\n' > "$tmpdir/local source files/original.md"
+sed -i.bak 's|^source: https://example.com/testing-patterns$|source: session|' \
+  "$raw_source_compat/raw/articles/2026-01-01-sample-article.md"
+sed -i.bak 's|^source: https://example.com/eval-frameworks$|source: s3://example-bucket/source.md|' \
+  "$raw_source_compat/raw/articles/2026-01-02-second-article.md"
+sed -i.bak "s|^source: https://example.com/title-cased-source$|source: ../../../local source files/original.md|" \
+  "$raw_source_compat/raw/articles/2026-01-03-Title Cased Source.md"
+sed -i.bak "s|^source: https://example.com/eval-methodology$|source: file://$tmpdir/local-source-repository|" \
+  "$raw_source_compat/raw/papers/2026-01-01-sample-paper.md"
+rm -f "$raw_source_compat"/raw/articles/*.bak "$raw_source_compat"/raw/papers/*.bak
+cat >> "$raw_source_compat/raw/articles/2026-01-01-sample-article.md" <<'EOF'
+
+Upstream navigation remains source content: [contributor guide](docs/CONTRIBUTING.md)
+EOF
+expect_success \
+  "raw provenance sentinels, URIs, valid paths, directories, and upstream links stay compatible" \
+  "$CLI" lint "$raw_source_compat"
+
+project_local_root="$tmpdir/project-local"
+project_local_wiki="$project_local_root/.wiki"
+mkdir -p "$project_local_wiki" "$project_local_root/docs/strategy"
+cp -R "$GOLDEN/." "$project_local_wiki/"
+printf '# Account intelligence\n' > "$project_local_root/docs/strategy/account-intelligence.md"
+sed -i.bak 's|^source: https://example.com/testing-patterns$|source: docs/strategy/account-intelligence.md|' \
+  "$project_local_wiki/raw/articles/2026-01-01-sample-article.md"
+rm -f "$project_local_wiki/raw/articles/2026-01-01-sample-article.md.bak"
+expect_success \
+  "project-local wiki resolves bare source paths from the parent project" \
+  "$CLI" lint "$project_local_wiki"
 
 ideas_wiki="$tmpdir/ideas-wiki"
 mkdir "$ideas_wiki"
